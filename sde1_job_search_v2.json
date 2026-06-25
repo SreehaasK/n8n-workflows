@@ -1,0 +1,199 @@
+{
+  "name": "SDE-1 Job Search & Application Tracker v2 (Ollama)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "id": "node-schedule-trigger",
+      "name": "⏰ Daily Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [0, 300],
+      "typeVersion": 1.1
+    },
+    {
+      "parameters": {
+        "url": "https://api.adzuna.com/v1/api/jobs/in/search/1",
+        "authentication": "none",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "app_id", "value": "YOUR_ADZUNA_APP_ID" },
+            { "name": "app_key", "value": "YOUR_ADZUNA_API_KEY" },
+            { "name": "results_per_page", "value": "20" },
+            { "name": "what", "value": "software developer java spring" },
+            { "name": "where", "value": "India" },
+            { "name": "sort_by", "value": "date" },
+            { "name": "max_days_old", "value": "3" }
+          ]
+        }
+      },
+      "id": "node-adzuna-search",
+      "name": "🔍 Adzuna Search: Java/Spring",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [220, 180],
+      "typeVersion": 4.1
+    },
+    {
+      "parameters": {
+        "url": "https://api.adzuna.com/v1/api/jobs/in/search/1",
+        "authentication": "none",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "app_id", "value": "YOUR_ADZUNA_APP_ID" },
+            { "name": "app_key", "value": "YOUR_ADZUNA_API_KEY" },
+            { "name": "results_per_page", "value": "20" },
+            { "name": "what", "value": "SDE-1 react node typescript" },
+            { "name": "where", "value": "India" },
+            { "name": "sort_by", "value": "date" },
+            { "name": "max_days_old", "value": "3" }
+          ]
+        }
+      },
+      "id": "node-adzuna-search-2",
+      "name": "🔍 Adzuna Search: React/Node",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [220, 420],
+      "typeVersion": 4.1
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "node-merge",
+      "name": "🔀 Merge Results",
+      "type": "n8n-nodes-base.merge",
+      "position": [460, 300],
+      "typeVersion": 2.1
+    },
+    {
+      "parameters": {
+        "jsCode": "const allItems = $input.all();\nconst seen = new Set();\nconst jobs = [];\n\nfor (const item of allItems) {\n  const results = item.json.results || [];\n  for (const job of results) {\n    const key = `${job.company?.display_name}-${job.title}`;\n    if (!seen.has(key)) {\n      seen.add(key);\n      jobs.push({\n        json: {\n          title: job.title,\n          company: job.company?.display_name || 'Unknown',\n          location: job.location?.display_name || 'Unknown',\n          description: (job.description || '').substring(0, 800),\n          url: job.redirect_url || `https://www.adzuna.in/details/${job.id}`,\n          salary_min: job.salary_min || null,\n          salary_max: job.salary_max || null,\n          created: job.created,\n          id: job.id\n        }\n      });\n    }\n  }\n}\n\nreturn jobs;"
+      },
+      "id": "node-deduplicate",
+      "name": "🧹 Deduplicate & Flatten",
+      "type": "n8n-nodes-base.code",
+      "position": [680, 300],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const job = item.json;\n\n  try {\n    const response = await fetch('http://host.docker.internal:11434/api/generate', {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json' },\n      body: JSON.stringify({\n        model: 'llama3.2',\n        stream: false,\n        prompt: `You are a job fit analyzer. Score this job for a candidate with the following profile:\\n\\nSkills: Java, Spring Boot, Python, JavaScript, TypeScript, React.js, Angular, Node.js, Flask, FastAPI, REST APIs, CI/CD, Kubernetes, Docker\\nExperience: 1 year full-stack at a software company\\nTarget role: SDE-1 / Associate Software Engineer\\nLocation: Open to anywhere in India + remote\\n\\nJob Title: ${job.title}\\nCompany: ${job.company}\\nDescription: ${job.description}\\n\\nReturn ONLY this exact JSON with no explanation, no markdown, no extra text:\\n{\"score\": 7, \"reason\": \"one line reason\", \"apply\": true}`\n      })\n    });\n\n    const data = await response.json();\n    const aiText = (data.response || '').trim();\n\n    let parsed;\n    try {\n      const match = aiText.match(/\\{[^{}]+\\}/);\n      parsed = match ? JSON.parse(match[0]) : { score: 0, reason: 'parse error', apply: false };\n    } catch {\n      parsed = { score: 0, reason: 'parse error', apply: false };\n    }\n\n    results.push({\n      json: {\n        title: job.title,\n        company: job.company,\n        location: job.location,\n        url: job.url,\n        salary_min: job.salary_min,\n        salary_max: job.salary_max,\n        created: job.created,\n        ai_score: parsed.score || 0,\n        ai_reason: parsed.reason || 'Unknown',\n        should_apply: (parsed.apply === true) && ((parsed.score || 0) >= 6)\n      }\n    });\n\n  } catch (err) {\n    results.push({\n      json: {\n        title: job.title,\n        company: job.company,\n        location: job.location,\n        url: job.url,\n        salary_min: job.salary_min,\n        salary_max: job.salary_max,\n        created: job.created,\n        ai_score: 0,\n        ai_reason: 'Ollama error: ' + err.message,\n        should_apply: false\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "id": "node-ollama-code",
+      "name": "🤖 Ollama Score + Keep Job Data",
+      "type": "n8n-nodes-base.code",
+      "position": [900, 300],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.should_apply }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ]
+        }
+      },
+      "id": "node-filter",
+      "name": "✅ Filter: Score ≥ 6 Only",
+      "type": "n8n-nodes-base.filter",
+      "position": [1120, 300],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Applications",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "options": {
+            "skipEmptyFields": true
+          }
+        }
+      },
+      "id": "node-sheets",
+      "name": "📋 Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [1340, 180],
+      "typeVersion": 4
+    },
+    {
+      "parameters": {
+        "sendTo": "YOUR_EMAIL@gmail.com",
+        "subject": "={{ '🚀 ' + $json.title + ' at ' + $json.company + ' — Match: ' + $json.ai_score + '/10' }}",
+        "message": "={{ '<h2>New Job Match!</h2><b>Role:</b> ' + $json.title + '<br><b>Company:</b> ' + $json.company + '<br><b>Location:</b> ' + $json.location + '<br><b>AI Match Score:</b> ' + $json.ai_score + '/10<br><b>Why it fits:</b> ' + $json.ai_reason + '<br><b>Salary:</b> ' + ($json.salary_min ? $json.salary_min + ' - ' + $json.salary_max + ' INR' : 'Not listed') + '<br><br><a href=\"' + $json.url + '\">👉 View & Apply on Adzuna</a><hr><small>Sent by your n8n job search bot</small>' }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "node-gmail",
+      "name": "📧 Gmail Alert",
+      "type": "n8n-nodes-base.gmail",
+      "position": [1340, 420],
+      "typeVersion": 2
+    }
+  ],
+  "connections": {
+    "⏰ Daily Trigger": {
+      "main": [
+        [
+          { "node": "🔍 Adzuna Search: Java/Spring", "type": "main", "index": 0 },
+          { "node": "🔍 Adzuna Search: React/Node", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "🔍 Adzuna Search: Java/Spring": {
+      "main": [[{ "node": "🔀 Merge Results", "type": "main", "index": 0 }]]
+    },
+    "🔍 Adzuna Search: React/Node": {
+      "main": [[{ "node": "🔀 Merge Results", "type": "main", "index": 1 }]]
+    },
+    "🔀 Merge Results": {
+      "main": [[{ "node": "🧹 Deduplicate & Flatten", "type": "main", "index": 0 }]]
+    },
+    "🧹 Deduplicate & Flatten": {
+      "main": [[{ "node": "🤖 Ollama Score + Keep Job Data", "type": "main", "index": 0 }]]
+    },
+    "🤖 Ollama Score + Keep Job Data": {
+      "main": [[{ "node": "✅ Filter: Score ≥ 6 Only", "type": "main", "index": 0 }]]
+    },
+    "✅ Filter: Score ≥ 6 Only": {
+      "main": [
+        [
+          { "node": "📋 Log to Google Sheets", "type": "main", "index": 0 },
+          { "node": "📧 Gmail Alert", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true
+  },
+  "tags": ["job-search", "ollama", "free", "SDE-1", "v2"]
+}
